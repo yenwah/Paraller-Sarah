@@ -2,12 +2,17 @@ name: Analyze Posts
 
 on:
   workflow_run:
-    workflows: ["Transcribe Videos"]
+    workflows: ["Transcribe Videos", "Sync Facebook"]
     types: [completed]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# IG 链和 FB 链都会触发这一步;排队跑,免得两份同时拆解同一批帖子、重复花 AI 额度。
+concurrency:
+  group: analyze-rewrite
+  cancel-in-progress: false
 
 jobs:
   analyze:

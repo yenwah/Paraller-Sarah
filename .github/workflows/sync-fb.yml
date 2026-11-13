@@ -1,0 +1,32 @@
+name: Sync Facebook
+
+on:
+  schedule:
+    # 默认:每周一 11:30 大马时间(UTC 03:30),比 IG 晚 30 分钟,错开 Apify 同时在跑。
+    - cron: "30 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sync Facebook pages
+        env:
+          TRACKER: FB
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # 可选:想调松/调紧 FB 筛选,到仓库 Variables 加 FB_MIN_ER 等(见 FB-README.md)
+          FB_MIN_ER: ${{ vars.FB_MIN_ER }}
+          FB_MIN_COMMENTS: ${{ vars.FB_MIN_COMMENTS }}
+          FB_MIN_ENGAGE: ${{ vars.FB_MIN_ENGAGE }}
+          FB_OUTLIER_X: ${{ vars.FB_OUTLIER_X }}
+          FB_TOP_N_PER_COMP: ${{ vars.FB_TOP_N_PER_COMP }}
+          FB_MAX_PER_COMP: ${{ vars.FB_MAX_PER_COMP }}
+          FB_DAYS_BACK: ${{ vars.FB_DAYS_BACK }}
+          FB_RESULTS_LIMIT: ${{ vars.FB_RESULTS_LIMIT }}
+        run: python sync_fb.py

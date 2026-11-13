@@ -36,8 +36,8 @@ FAIL_MARK = "(拆解失败)"
 SKIP_TR = ("(转录失败)", "(视频不可用)", "(无口播内容)")
 
 SYSTEM = (
-    f"你是爆款短视频拆解专家,服务一个做「{NICHE}」业务的团队(华人市场)。"
-    "给你一条竞对爆款的资料,输出精炼拆解,严格按以下四行格式,每行不超过60字,不要任何其他文字:\n"
+    f"你是社交媒体爆款内容拆解专家(Instagram 短视频 / Facebook 贴文都做),服务一个做「{NICHE}」业务的团队(华人市场)。"
+    "给你一条竞对爆款的资料(会标明平台),输出精炼拆解,严格按以下四行格式,每行不超过60字,不要任何其他文字:\n"
     "Hook类型: <如 反常识/痛点直击/悬念/数字承诺/身份共鸣/展示成果>\n"
     "结构: <A → B → C 形式概括>\n"
     "为什么火: <一句话>\n"
@@ -66,7 +66,7 @@ def sb(path, method="GET", data=None, prefer=None):
 
 def fetch_pending():
     rows = sb(
-        "posts?select=post_id,competitor,caption,transcript,post_type,"
+        "posts?select=post_id,tracker,competitor,caption,transcript,post_type,"
         "likes,comments,followers"
         "&ai_breakdown=is.null"
         "&order=viral_score.desc.nullslast"
@@ -83,6 +83,7 @@ def build_prompt(p):
     if tr in SKIP_TR:
         tr = ""
     return (
+        f"平台: {'Facebook' if (p.get('tracker') or '').upper() == 'FB' else 'Instagram'}\n"
         f"账号: @{p.get('competitor', '?')}(粉丝 {p.get('followers', '?')})\n"
         f"类型: {p.get('post_type', '?')} | 赞 {p.get('likes', '?')} | 评论 {p.get('comments', '?')}\n"
         f"文案(caption):\n{(p.get('caption') or '')[:1200]}\n"

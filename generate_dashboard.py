@@ -2,8 +2,9 @@
 """
 Viral Posts Dashboard Generator
 --------------------------------
-Pulls the posts table from Supabase and bakes a static dashboard into
-docs/index.html for GitHub Pages.
+Pulls the posts table from Supabase and bakes static dashboards for
+GitHub Pages: docs/index.html (Instagram), docs/fb.html (Facebook) and the
+shared team workbench docs/team.html.
 
 - Videos play inline via Instagram's official /embed/ iframe (never expires).
 - Status writes go straight to Supabase from the browser using the anon key
@@ -27,7 +28,16 @@ SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")  # public key, baked
 # Falls back to sensible defaults so the page still builds before they're set.
 BRAND = os.environ.get("BRAND") or "爆款雷达"
 SYNC_DAY = os.environ.get("SYNC_DAY") or "每周"
-TRACKER_LABEL = {"IG": BRAND + " 竞对"}
+TRACKER_LABEL = {"IG": BRAND + " 竞对", "FB": BRAND + " Facebook 竞对"}
+
+# One dashboard per platform. Rows in `posts` / `competitors` carry the tracker.
+PLATFORMS = {
+    "IG": {"file": "index.html", "name": "Instagram", "profile": "https://www.instagram.com/",
+           "title": BRAND, "foot": "视频由 Instagram 官方 embed 播放"},
+    "FB": {"file": "fb.html", "name": "Facebook", "profile": "https://www.facebook.com/",
+           "title": BRAND + " · Facebook",
+           "foot": "贴文由 Facebook 官方 embed 展示(私密或已删除的贴文可能显示空白)"},
+}
 STATUSES = ["未处理", "拍摄中", "已处理", "跳过"]
 
 # comment-bait CTA patterns — require an explicit gated keyword:
@@ -72,17 +82,28 @@ def _handle(name):
         if not parts or parts[0] in ("p", "reel", "reels", "stories", "tv"):
             return ""
         n = parts[0]
+    elif "facebook.com" in n or "fb.com" in n:
+        u = urllib.parse.urlparse(n if "//" in n else "https://" + n)
+        parts = [p for p in u.path.split("/") if p]
+        if parts and parts[0] == "profile.php":
+            n = (urllib.parse.parse_qs(u.query).get("id") or [""])[0]
+        elif parts and parts[0] == "pages" and len(parts) >= 2:
+            n = parts[-1]
+        elif parts:
+            n = parts[0]
+        else:
+            return ""
     return n.lstrip("@").strip().lower()
 
 
 def fetch_active_handles(key):
-    """Handles ticked `active` in the competitors table.
+    """Handles ticked `active` in the competitors table, per tracker.
 
-    Returns None when the table cannot be read or is empty. The caller then
-    skips filtering, so a key problem or an older schema still builds the full
-    dashboard instead of an empty one.
+    Returns {tracker: {handle, ...}} or None when the table cannot be read or is
+    empty. The caller then skips filtering, so a key problem or an older schema
+    still builds the full dashboard instead of an empty one.
     """
-    url = f"{SUPABASE_URL}/rest/v1/competitors?select=username,active"
+    url = f"{SUPABASE_URL}/rest/v1/competitors?select=username,active,tracker"
     req = urllib.request.Request(url, headers={"apikey": key})
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -95,8 +116,14 @@ def fetch_active_handles(key):
         print("  WARNING: the competitors table is empty - "
               "showing every account that has posts")
         return None
-    return {h for h in (_handle(r.get("username"))
-                        for r in rows if r.get("active")) if h}
+    out = {}
+    for r in rows:
+        if not r.get("active"):
+            continue
+        h = _handle(r.get("username"))
+        if h:
+            out.setdefault((r.get("tracker") or "IG").upper(), set()).add(h)
+    return out
 
 
 def normalize(r):
@@ -107,9 +134,12 @@ def normalize(r):
     tr = (r.get("transcript") or "")
     brk = (r.get("ai_breakdown") or "")
     er = r.get("engagement_rate") or 0
+    pf = (r.get("tracker") or "IG").upper()
     return {
         "id": post_id,
-        "tracker": TRACKER_LABEL.get(r.get("tracker"), r.get("tracker") or "AI Competitors"),
+        "pf": pf,
+        "shares": r.get("shares") or 0,
+        "tracker": TRACKER_LABEL.get(pf, pf),
         "competitor": r.get("competitor") or "",
         "caption": caption,
         "transcript": tr if tr not in ("(转录失败)", "(视频不可用)", "(无口播内容)") else "",
@@ -123,7 +153,7 @@ def normalize(r):
         "er": round(float(er) * 100, 2),
         "followers": r.get("followers") or 0,
         "date": r.get("post_date") or "",
-        "url": r.get("post_url") or f"https://www.instagram.com/p/{post_id}/",
+        "url": r.get("post_url") or (f"https://www.instagram.com/p/{post_id}/" if pf == "IG" else ""),
         "video": bool(r.get("is_video")) or (r.get("post_type") in ("Video", "Reel")) or bool(r.get("video_url")),
         "ratio": 0,
         "score": float(r.get("viral_score") or 0),
@@ -137,7 +167,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>__BRAND__</title>
+<title>__TITLE__</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
@@ -250,6 +280,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 
   .embed { position: relative; width: 100%; aspect-ratio: 4/5; background: #080b10; }
+  .embed.fb { aspect-ratio: 1/1.15; background: #fff; }
   .embed iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
   .embed .ph { position: absolute; inset: 0; display: grid; place-items: center;
     background: linear-gradient(110deg, #0b0e15 8%, #121826 18%, #0b0e15 33%);
@@ -339,6 +370,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
 <svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98"/><path d="m15.41 6.51-6.82 3.98"/></symbol>
   <symbol id="i-flame" viewBox="0 0 24 24"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
   <symbol id="i-heart" viewBox="0 0 24 24"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.29 1.51 4.04 3 5.5l7 7Z"/></symbol>
@@ -363,7 +395,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="hrow">
     <div class="brand">
       <div class="mark"><svg class="ic"><use href="#i-flame"/></svg></div>
-      <h1>__BRAND__<small id="updated"></small></h1>
+      <h1>__TITLE__<small id="updated"></small></h1>
     </div>
     <div class="search"><svg class="ic"><use href="#i-search"/></svg>
       <input id="fSearch" placeholder="搜文案 / hashtag / 账号"></div>
@@ -374,11 +406,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <option value="score">按 Viral Score</option>
       <option value="er">按 Engagement Rate</option>
       <option value="comments">按 Comments</option>
-      <option value="likes">按 Likes</option>
+      <option value="likes">按 Likes</option>__SORT_SHARES__
       <option value="date">按 最新日期</option>
     </select>
     <button class="btn" id="fVideo"><svg class="ic"><use href="#i-video"/></svg>只看视频</button>
 
+    __NAV__
     <a class="btn" href="team.html" target="_top" title="工作台"><svg class="ic"><use href="#i-users"/></svg>工作台</a>
   </div>
   <div class="tabs" id="tabs"></div>
@@ -390,7 +423,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="empty" id="empty" style="display:none"><svg class="ic"><use href="#i-search"/></svg>没有符合条件的帖子</div>
   <div class="more" id="moreWrap" style="display:none"><button id="moreBtn">载入更多</button></div>
 </main>
-<footer>数据来源 Supabase · __SYNC_DAY__自动更新 · 状态更改即时同步全团队 · 视频由 Instagram 官方 embed 播放</footer>
+<footer>数据来源 Supabase · __SYNC_DAY__自动更新 · 状态更改即时同步全团队 · __FOOT__</footer>
 <div id="toast"></div>
 <script id="data" type="application/json">__DATA__</script>
 <script>
@@ -398,6 +431,9 @@ const DATA = JSON.parse(document.getElementById('data').textContent);
 const SUPA = '__SUPA_URL__';
 const ANON = '__SUPA_ANON__';
 const STATUSES = __STATUSES__;
+const PF = '__PF__';
+const PF_NAME = '__PF_NAME__';
+const PROFILE = '__PROFILE__';
 document.getElementById('updated').textContent = '更新于 __UPDATED__';
 const PAGE = 48;
 let shown = PAGE;
@@ -448,7 +484,7 @@ function basePool() {
 function filtered() {
   const s = $('fSort').value;
   let arr = basePool().filter(d => curTab === '全部' || d.status === curTab);
-  const key = { score:'score', er:'er', comments:'comments', likes:'likes', x:'x' }[s];
+  const key = { score:'score', er:'er', comments:'comments', likes:'likes', shares:'shares', x:'x' }[s];
   if (s === 'date') arr.sort((a,b) => (b.date||'').localeCompare(a.date||''));
   else arr.sort((a,b) => (b[key]||0) - (a[key]||0));
   return arr;
@@ -485,7 +521,9 @@ const io = new IntersectionObserver(entries => {
       const el = e.target, pid = el.dataset.pid;
       if (!el.querySelector('iframe')) {
         const f = document.createElement('iframe');
-        f.src = 'https://www.instagram.com/p/' + pid + '/embed/';
+        f.src = PF === 'FB'
+          ? 'https://www.facebook.com/plugins/post.php?show_text=true&width=500&href=' + encodeURIComponent((byRec[pid] || {}).url || '')
+          : 'https://www.instagram.com/p/' + pid + '/embed/';
         f.loading = 'lazy'; f.allow = 'autoplay; encrypted-media';
         el.appendChild(f);
       }
@@ -534,11 +572,11 @@ function card(d, idx) {
   const hook = lines[0] || '';
   const tr = (d.transcript && d.transcript !== '(转录失败)' && d.transcript !== '(无口播内容)') ? d.transcript : '';
   el.innerHTML = `
-    <div class="embed" data-pid="${d.id}"><div class="ph"><svg class="ic"><use href="#i-${typeIcon}"/></svg></div></div>
+    <div class="embed${PF === 'FB' ? ' fb' : ''}" data-pid="${d.id}"><div class="ph"><svg class="ic"><use href="#i-${typeIcon}"/></svg></div></div>
     <div class="meta">
       <div class="row1">
         <span class="handle" title="拖到上方 tab 即可归类">${I('grip')}</span>
-        <a class="who" href="https://www.instagram.com/${d.competitor}/" target="_blank">@${d.competitor}</a>
+        <a class="who" href="${PROFILE}${d.competitor}/" target="_blank">@${d.competitor}</a>
         <span class="badge">${d.type || '-'}</span>
         ${days !== null && days <= 7 ? '<span class="badge bnew">' + I('star') + '新帖</span>' : ''}
         ${horse ? '<span class="badge bhorse">' + I('zap') + '黑马</span>' : ''}
@@ -551,6 +589,7 @@ function card(d, idx) {
         <span class="num er" title="Engagement Rate">${I('pct')}<b>${d.er}%</b></span>
         <span class="num" title="Likes">${I('heart')}<b>${d.likes > 0 ? fmt(d.likes) : '隐藏'}</b></span>
         <span class="num" title="Comments">${I('msg')}<b>${fmt(d.comments)}</b></span>
+        ${PF === 'FB' ? '<span class="num" title="Shares">' + I('share') + '<b>' + fmt(d.shares || 0) + '</b></span>' : ''}
         <span class="num" title="Followers">${I('users')}<b>${fmt(d.followers)}</b></span>
       </div>
       <div class="cap" onclick="this.classList.toggle('open')"></div>
@@ -561,7 +600,7 @@ function card(d, idx) {
         ${tr ? '<button class="abtn mic" title="复制视频口播逐字稿">' + I('mic') + '口播</button>' : ''}
         ${d.my ? '<button class="abtn minec" title="复制我的改写口播稿(可直接拍)">' + I('mic') + '我的稿</button>' : ''}
         <button class="abtn brief" title="复制拍摄 Brief(数据+Hook+AI拆解+我的稿+口播稿+文案)">${I('clip')}Brief</button>
-        <a class="abtn" href="${d.url}" target="_blank" title="打开 Instagram 原帖">${I('ext')}</a></div>
+        <a class="abtn" href="${d.url}" target="_blank" title="打开 ${PF_NAME} 原帖">${I('ext')}</a></div>
     </div>`;
   const capEl = el.querySelector('.cap');
   const restTxt = lines.slice(1).join('\\n');
@@ -698,6 +737,7 @@ TEAM_TEMPLATE = """<!DOCTYPE html>
   ::-webkit-scrollbar { width:10px; } ::-webkit-scrollbar-thumb { background:#232c3b; border-radius:8px; }
   :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:6px; }
   .ic { width:14px; height:14px; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; fill:none; flex:none; }
+  .pfb { font-size:10px; font-weight:700; letter-spacing:.4px; color:var(--faint); border:1px solid var(--border-hi); border-radius:5px; padding:1px 5px; }
 
   header { position:sticky; top:0; z-index:50; background:rgba(10,13,19,.86);
     backdrop-filter:blur(14px); border-bottom:1px solid var(--border); padding:13px 20px; }
@@ -898,8 +938,8 @@ TEAM_TEMPLATE = """<!DOCTYPE html>
       <h3><svg class="ic"><use href="#i-user"/></svg>SOP-05 · 竞对名单管理(发现好账号就加进来)</h3>
       <ol>
         <li>打开 Supabase「<b>competitors</b>」表,加一行</li>
-        <li><b>Username</b>:贴账号名或 IG <b>主页</b>链接都行(带 ?igsh= 参数没关系;不要贴帖子链接)</li>
-        <li><b>Tracker</b>:选 IG Competitors 或 AI Competitors</li>
+        <li><b>Username</b>:IG 贴账号名或 IG <b>主页</b>链接都行(带 ?igsh= 参数没关系);FB 贴 <b>专页</b>网址或专页名(例 facebook.com/katacaremy);都不要贴帖子链接</li>
+        <li><b>Tracker</b>:Instagram 填 <b>IG</b>,Facebook 填 <b>FB</b>(大写,不能写错)</li>
         <li><b>Active</b>:打勾✅ — <b>没勾不会抓</b></li>
         <li>每周一自动生效;停止追踪 = 取消勾,不用删行</li>
       </ol>
@@ -1037,6 +1077,10 @@ async function setStatus(d, val) {
 }
 
 // ---- 今日工作 ----
+function profileUrl(d) {
+  return (d.pf === 'FB' ? 'https://www.facebook.com/' : 'https://www.instagram.com/') + d.competitor + '/';
+}
+
 function pillBtn(cls, icon, label) {
   return '<button class="pill ' + cls + '">' + I(icon) + label + '</button>';
 }
@@ -1054,7 +1098,8 @@ function renderWork() {
   if (!shoot.length) sl.innerHTML = '<div class="none">队列是空的 — Marketer 去爆款雷达挑几条拖进「拍摄中」</div>';
   shoot.forEach(d => {
     const r = document.createElement('div'); r.className = 'row';
-    r.innerHTML = '<a class="who2" href="https://www.instagram.com/' + d.competitor + '/" target="_blank">@' + esc(d.competitor) + '</a>'
+    r.innerHTML = '<a class="who2" href="' + profileUrl(d) + '" target="_blank">@' + esc(d.competitor) + '</a>'
+      + '<span class="pfb">' + (d.pf === 'FB' ? 'FB' : 'IG') + '</span>'
       + ((d.x || 0) >= 2 ? '<span class="xb">×' + d.x + '</span>' : '')
       + '<span class="hookline">' + esc(firstLine(d.caption)) + '</span>'
       + '<a class="pill" href="' + d.url + '" target="_blank">' + I('ext') + '原帖</a>'
@@ -1072,7 +1117,8 @@ function renderWork() {
   picks.forEach(d => {
     const r = document.createElement('div'); r.className = 'row';
     r.innerHTML = '<span class="xb">×' + d.x + '</span>'
-      + '<a class="who2" href="https://www.instagram.com/' + d.competitor + '/" target="_blank">@' + esc(d.competitor) + '</a>'
+      + '<a class="who2" href="' + profileUrl(d) + '" target="_blank">@' + esc(d.competitor) + '</a>'
+      + '<span class="pfb">' + (d.pf === 'FB' ? 'FB' : 'IG') + '</span>'
       + '<span class="hookline">' + esc(firstLine(d.caption))
       + '<small>🔥' + d.score + ' · ER ' + d.er + '% · 💬' + fmt(d.comments) + '</small></span>'
       + '<a class="pill" href="' + d.url + '" target="_blank">' + I('ext') + '原帖</a>'
@@ -1153,29 +1199,60 @@ def main():
             seen.add(p["id"])
             unique.append(p)
 
+    active_map = fetch_active_handles(svc)
+    myt = timezone(timedelta(hours=8))
+    updated = datetime.now(myt).strftime("%Y-%m-%d %H:%M") + " (GMT+8)"
+    out_dir = os.path.dirname(OUT_PATH)
+    os.makedirs(out_dir, exist_ok=True)
+
+    all_boards = []
+    for tracker, cfg in PLATFORMS.items():
+        board, trends = prepare_board(unique, tracker, active_map)
+        all_boards.extend(board)
+        write_board(tracker, cfg, board, trends, updated, out_dir)
+
+    # team portal: both platforms in one shooting queue
+    team_payload = json.dumps(all_boards, ensure_ascii=False).replace("</", "<\\/")
+    team_html = (
+        TEAM_TEMPLATE
+        .replace("__DATA__", team_payload)
+        .replace("__UPDATED__", updated)
+        .replace("__SUPA_URL__", SUPABASE_URL)
+        .replace("__SUPA_ANON__", SUPABASE_ANON_KEY)
+    )
+    team_path = os.path.join(out_dir, "team.html")
+    with open(team_path, "w", encoding="utf-8") as f:
+        f.write(team_html)
+    print(f"Wrote {team_path}")
+
+
+def prepare_board(unique, tracker, active_map):
+    """One platform's posts: active filter, outlier multiplier, trending tags."""
+    mine = [p for p in unique if p["pf"] == tracker]
+
     # Only accounts still ticked `active` belong on the board. Unticking one in
     # Supabase hides it here; its rows stay in the table, so ticking it back
     # later brings the whole history with it.
-    active = fetch_active_handles(svc)
-    if active is not None:
-        kept = [p for p in unique if _handle(p["competitor"]) in active]
-        dropped = sorted({p["competitor"] for p in unique
+    active = (active_map or {}).get(tracker) if active_map is not None else None
+    if active:
+        kept = [p for p in mine if _handle(p["competitor"]) in active]
+        dropped = sorted({p["competitor"] for p in mine
                           if _handle(p["competitor"]) not in active})
         if kept:
             if dropped:
-                print("  hidden (active not ticked): " + ", ".join(dropped))
-            print(f"  {len(unique)} -> {len(kept)} posts after the active filter")
-            unique = kept
-        elif unique:
-            print("  WARNING: that would hide every post - skipping the active "
+                print(f"  [{tracker}] hidden (active not ticked): " + ", ".join(dropped))
+            print(f"  [{tracker}] {len(mine)} -> {len(kept)} posts after the active filter")
+            mine = kept
+        elif mine:
+            print(f"  [{tracker}] WARNING: that would hide every post - skipping the active "
                   "filter. Check the usernames in the competitors table.")
 
     # outlier multiplier: post score vs the account's own median score
     import statistics
     by_comp = {}
-    for p in unique:
+    for p in mine:
         by_comp.setdefault(p["competitor"], []).append(p["score"] or 0)
-    for p in unique:
+    for p in mine:
         scores = [s for s in by_comp[p["competitor"]] if s > 0]
         med = statistics.median(scores) if len(scores) >= 3 else 0
         p["x"] = round((p["score"] or 0) / med, 1) if med > 0 else 0
@@ -1183,20 +1260,32 @@ def main():
     # trending hashtags among outlier posts
     from collections import Counter
     cnt = Counter()
-    for p in unique:
+    for p in mine:
         if (p.get("x") or 0) >= 2 or (p["score"] or 0) >= 10:
             for tag in re.split(r"[,\s]+", p.get("tags") or ""):
                 tag = tag.strip().lstrip("#").lower()
                 if len(tag) >= 2:
                     cnt[tag] += 1
     trends = [[t, n] for t, n in cnt.most_common(15) if n >= 2][:10]
+    return mine, trends
 
-    myt = timezone(timedelta(hours=8))
-    updated = datetime.now(myt).strftime("%Y-%m-%d %H:%M") + " (GMT+8)"
-    payload = json.dumps(unique, ensure_ascii=False).replace("</", "<\\/")
+
+def write_board(tracker, cfg, board, trends, updated, out_dir):
+    nav = "".join(
+        '<a class="btn{on}" href="{f}" title="{n} 爆款雷达">{n}</a>'.format(
+            on=" on" if t == tracker else "", f=c["file"], n=c["name"])
+        for t, c in PLATFORMS.items())
+    sort_shares = '\n      <option value="shares">按 Shares</option>' if tracker == "FB" else ""
+    payload = json.dumps(board, ensure_ascii=False).replace("</", "<\\/")
     html = (
         HTML_TEMPLATE
-        .replace("__BRAND__", BRAND)
+        .replace("__TITLE__", cfg["title"])
+        .replace("__NAV__", nav)
+        .replace("__SORT_SHARES__", sort_shares)
+        .replace("__FOOT__", cfg["foot"])
+        .replace("__PF_NAME__", cfg["name"])
+        .replace("__PF__", tracker)
+        .replace("__PROFILE__", cfg["profile"])
         .replace("__SYNC_DAY__", SYNC_DAY)
         .replace("__DATA__", payload)
         .replace("__UPDATED__", updated)
@@ -1205,24 +1294,10 @@ def main():
         .replace("__STATUSES__", json.dumps(STATUSES, ensure_ascii=False))
         .replace("__TRENDS__", json.dumps(trends, ensure_ascii=False))
     )
-
-    os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
-    with open(OUT_PATH, "w", encoding="utf-8") as f:
+    path = os.path.join(out_dir, cfg["file"])
+    with open(path, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"\nWrote {OUT_PATH} with {len(unique)} posts.")
-
-    # team portal — slim payload (no captions beyond first 200 chars needed for hooks)
-    team_html = (
-        TEAM_TEMPLATE
-        .replace("__DATA__", payload)
-        .replace("__UPDATED__", updated)
-        .replace("__SUPA_URL__", SUPABASE_URL)
-        .replace("__SUPA_ANON__", SUPABASE_ANON_KEY)
-    )
-    team_path = os.path.join(os.path.dirname(OUT_PATH), "team.html")
-    with open(team_path, "w", encoding="utf-8") as f:
-        f.write(team_html)
-    print(f"Wrote {team_path}")
+    print(f"Wrote {path} with {len(board)} {tracker} posts.")
 
 
 if __name__ == "__main__":

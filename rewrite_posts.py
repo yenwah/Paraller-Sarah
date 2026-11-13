@@ -80,6 +80,21 @@ def build_system():
 
 SYSTEM = build_system()
 
+# Facebook 是「贴文」不是口播:同一套人设,但输出改成可以直接贴到 FB 的文字帖。
+FB_ADDON = (
+    "\n\n【本条是 Facebook 贴文,不是视频口播】\n"
+    "这次的任务改成:把竞对这条 Facebook 爆款,改写成【人设与规矩】里这个人可以直接贴到自己 Facebook 专页的【中文贴文】。\n"
+    "- 只借原帖的钩子和结构,不抄原文字句\n"
+    "- 开头第一行就是痛点或钩子;可以用「•」一行一个卖点的清单,也可以用逗号连成长段落,照【人设与规矩】的写法\n"
+    "- 不要写镜头、口播、秒数等视频用语;直接输出贴文正文,不要解释、标题或前后缀\n"
+    "- 红线照旧一条都不能碰,尤其不能编造数字、成绩、奖项,不能承诺几天见效"
+)
+SYSTEM_FB = SYSTEM + FB_ADDON
+
+
+def system_for(p):
+    return SYSTEM_FB if (p.get("tracker") or "").upper() == "FB" else SYSTEM
+
 
 def _request(url, method="GET", data=None, headers=None, timeout=120):
     hdrs = headers or {}
@@ -110,7 +125,7 @@ def sb(path, method="GET", data=None, prefer=None):
 def fetch_pending():
     flt = "" if REWRITE_ALL else "&my_script=is.null"
     rows = sb(
-        "posts?select=post_id,competitor,caption,transcript,post_type,"
+        "posts?select=post_id,tracker,competitor,caption,transcript,post_type,"
         "likes,comments,followers"
         + flt +
         "&order=viral_score.desc.nullslast"
@@ -127,13 +142,17 @@ def build_prompt(p):
     if tr in SKIP_TR:
         tr = ""
     cap = (p.get("caption") or "")[:800]
-    body = (f"竞对账号: @{p.get('competitor', '?')}\n"
+    body = (f"平台: {'Facebook' if (p.get('tracker') or '').upper() == 'FB' else 'Instagram'}\n"
+            f"竞对账号: @{p.get('competitor', '?')}\n"
             f"数据: 赞 {p.get('likes', '?')} | 评论 {p.get('comments', '?')} | 粉丝 {p.get('followers', '?')}\n")
     if tr:
         body += f"\n【原视频口播稿(主要改写依据)】\n{tr[:2800]}\n"
     if cap:
         body += f"\n【原帖文案(辅助参考)】\n{cap}\n"
-    body += "\n请按系统指令,把上面这条爆款改写成【人设与规矩】里这个人的中文口播脚本。"
+    if (p.get("tracker") or "").upper() == "FB":
+        body += "\n请按系统指令,把上面这条 Facebook 爆款改写成【人设与规矩】里这个人的中文 Facebook 贴文。"
+    else:
+        body += "\n请按系统指令,把上面这条爆款改写成【人设与规矩】里这个人的中文口播脚本。"
     return body
 
 
@@ -147,7 +166,7 @@ def rewrite_gemini(key, p):
             resp = _request(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                 "POST",
-                {"system_instruction": {"parts": [{"text": SYSTEM}]},
+                {"system_instruction": {"parts": [{"text": system_for(p)}]},
                  "contents": [{"role": "user", "parts": [{"text": build_prompt(p)}]}],
                  "generationConfig": cfg},
                 {"x-goog-api-key": key}, 90)
@@ -167,7 +186,7 @@ def rewrite_gemini(key, p):
 def rewrite_anthropic(key, p):
     resp = _request(
         "https://api.anthropic.com/v1/messages", "POST",
-        {"model": CLAUDE_MODEL, "max_tokens": 2000, "system": SYSTEM,
+        {"model": CLAUDE_MODEL, "max_tokens": 2000, "system": system_for(p),
          "messages": [{"role": "user", "content": build_prompt(p)}]},
         {"x-api-key": key, "anthropic-version": "2023-06-01"}, 90)
     parts = resp.get("content") or []

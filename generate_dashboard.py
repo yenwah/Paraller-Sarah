@@ -35,7 +35,7 @@ PLATFORMS = {
     "IG": {"file": "index.html", "name": "Instagram", "profile": "https://www.instagram.com/",
            "title": BRAND, "foot": "视频由 Instagram 官方 embed 播放"},
     "FB": {"file": "fb.html", "name": "Facebook", "profile": "https://www.facebook.com/",
-           "title": BRAND + " · Facebook",
+           "title": "Facebook爆款",
            "foot": "贴文由 Facebook 官方 embed 展示(私密或已删除的贴文可能显示空白)"},
 }
 STATUSES = ["未处理", "拍摄中", "已处理", "跳过"]

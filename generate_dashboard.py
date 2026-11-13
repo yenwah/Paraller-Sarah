@@ -28,7 +28,7 @@ SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")  # public key, baked
 # Falls back to sensible defaults so the page still builds before they're set.
 BRAND = os.environ.get("BRAND") or "爆款雷达"
 SYNC_DAY = os.environ.get("SYNC_DAY") or "每周"
-TRACKER_LABEL = {"IG": BRAND + " 竞对", "FB": BRAND + " Facebook 竞对"}
+TRACKER_LABEL = {"IG": "Instagram 竞对", "FB": "Facebook 竞对"}
 
 # One dashboard per platform. Rows in `posts` / `competitors` carry the tracker.
 PLATFORMS = {
@@ -434,6 +434,7 @@ const STATUSES = __STATUSES__;
 const PF = '__PF__';
 const PF_NAME = '__PF_NAME__';
 const PROFILE = '__PROFILE__';
+const DEFAULT_TRACKER = '__DEFAULT_TRACKER__';
 document.getElementById('updated').textContent = '更新于 __UPDATED__';
 const PAGE = 48;
 let shown = PAGE;
@@ -469,6 +470,7 @@ function toast(msg, ok) {
 const comps = [...new Set(DATA.map(d => d.competitor))].sort();
 comps.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = '@'+c; $('fComp').appendChild(o); });
 [...new Set(DATA.map(d => d.tracker))].forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = t; $('fTracker').appendChild(o); });
+if ([...$('fTracker').options].some(o => o.value === DEFAULT_TRACKER)) $('fTracker').value = DEFAULT_TRACKER;
 
 function matchQ(d) {
   const q = ($('fSearch').value || '').trim().toLowerCase();
@@ -521,7 +523,7 @@ const io = new IntersectionObserver(entries => {
       const el = e.target, pid = el.dataset.pid;
       if (!el.querySelector('iframe')) {
         const f = document.createElement('iframe');
-        f.src = PF === 'FB'
+        f.src = (byRec[pid] || {}).pf === 'FB'
           ? 'https://www.facebook.com/plugins/post.php?show_text=true&width=500&href=' + encodeURIComponent((byRec[pid] || {}).url || '')
           : 'https://www.instagram.com/p/' + pid + '/embed/';
         f.loading = 'lazy'; f.allow = 'autoplay; encrypted-media';
@@ -572,11 +574,11 @@ function card(d, idx) {
   const hook = lines[0] || '';
   const tr = (d.transcript && d.transcript !== '(转录失败)' && d.transcript !== '(无口播内容)') ? d.transcript : '';
   el.innerHTML = `
-    <div class="embed${PF === 'FB' ? ' fb' : ''}" data-pid="${d.id}"><div class="ph"><svg class="ic"><use href="#i-${typeIcon}"/></svg></div></div>
+    <div class="embed${d.pf === 'FB' ? ' fb' : ''}" data-pid="${d.id}"><div class="ph"><svg class="ic"><use href="#i-${typeIcon}"/></svg></div></div>
     <div class="meta">
       <div class="row1">
         <span class="handle" title="拖到上方 tab 即可归类">${I('grip')}</span>
-        <a class="who" href="${PROFILE}${d.competitor}/" target="_blank">@${d.competitor}</a>
+        <a class="who" href="${d.pf === 'FB' ? 'https://www.facebook.com/' : 'https://www.instagram.com/'}${d.competitor}/" target="_blank">@${d.competitor}</a>
         <span class="badge">${d.type || '-'}</span>
         ${days !== null && days <= 7 ? '<span class="badge bnew">' + I('star') + '新帖</span>' : ''}
         ${horse ? '<span class="badge bhorse">' + I('zap') + '黑马</span>' : ''}
@@ -589,7 +591,7 @@ function card(d, idx) {
         <span class="num er" title="Engagement Rate">${I('pct')}<b>${d.er}%</b></span>
         <span class="num" title="Likes">${I('heart')}<b>${d.likes > 0 ? fmt(d.likes) : '隐藏'}</b></span>
         <span class="num" title="Comments">${I('msg')}<b>${fmt(d.comments)}</b></span>
-        ${PF === 'FB' ? '<span class="num" title="Shares">' + I('share') + '<b>' + fmt(d.shares || 0) + '</b></span>' : ''}
+        ${d.pf === 'FB' ? '<span class="num" title="Shares">' + I('share') + '<b>' + fmt(d.shares || 0) + '</b></span>' : ''}
         <span class="num" title="Followers">${I('users')}<b>${fmt(d.followers)}</b></span>
       </div>
       <div class="cap" onclick="this.classList.toggle('open')"></div>
@@ -600,7 +602,7 @@ function card(d, idx) {
         ${tr ? '<button class="abtn mic" title="复制视频口播逐字稿">' + I('mic') + '口播</button>' : ''}
         ${d.my ? '<button class="abtn minec" title="复制我的改写口播稿(可直接拍)">' + I('mic') + '我的稿</button>' : ''}
         <button class="abtn brief" title="复制拍摄 Brief(数据+Hook+AI拆解+我的稿+口播稿+文案)">${I('clip')}Brief</button>
-        <a class="abtn" href="${d.url}" target="_blank" title="打开 ${PF_NAME} 原帖">${I('ext')}</a></div>
+        <a class="abtn" href="${d.url}" target="_blank" title="打开 ${d.pf === 'FB' ? 'Facebook' : 'Instagram'} 原帖">${I('ext')}</a></div>
     </div>`;
   const capEl = el.querySelector('.cap');
   const restTxt = lines.slice(1).join('\\n');
@@ -1205,11 +1207,13 @@ def main():
     out_dir = os.path.dirname(OUT_PATH)
     os.makedirs(out_dir, exist_ok=True)
 
-    all_boards = []
-    for tracker, cfg in PLATFORMS.items():
-        board, trends = prepare_board(unique, tracker, active_map)
+    all_boards, trends_by = [], {}
+    for tracker in PLATFORMS:
+        board, trends_by[tracker] = prepare_board(unique, tracker, active_map)
         all_boards.extend(board)
-        write_board(tracker, cfg, board, trends, updated, out_dir)
+    # every page carries both platforms; the Tracker dropdown starts on its own
+    for tracker, cfg in PLATFORMS.items():
+        write_board(tracker, cfg, all_boards, trends_by[tracker], updated, out_dir)
 
     # team portal: both platforms in one shooting queue
     team_payload = json.dumps(all_boards, ensure_ascii=False).replace("</", "<\\/")
@@ -1285,6 +1289,7 @@ def write_board(tracker, cfg, board, trends, updated, out_dir):
         .replace("__FOOT__", cfg["foot"])
         .replace("__PF_NAME__", cfg["name"])
         .replace("__PF__", tracker)
+        .replace("__DEFAULT_TRACKER__", TRACKER_LABEL.get(tracker, tracker))
         .replace("__PROFILE__", cfg["profile"])
         .replace("__SYNC_DAY__", SYNC_DAY)
         .replace("__DATA__", payload)
@@ -1297,7 +1302,7 @@ def write_board(tracker, cfg, board, trends, updated, out_dir):
     path = os.path.join(out_dir, cfg["file"])
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"Wrote {path} with {len(board)} {tracker} posts.")
+    print(f"Wrote {path} with {len(board)} posts (opens on {tracker}).")
 
 
 if __name__ == "__main__":
